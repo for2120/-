@@ -1,0 +1,8 @@
+export SMARTCART_DB_HOST=localhost
+export SMARTCART_DB_PORT=3306
+export SMARTCART_DB_USER=smartcart_user
+export SMARTCART_DB_PASSWORD=smartcart1234
+export SMARTCART_DB_NAME=smartcart
+export SMARTCART_LOADCELL_PORT=/dev/ttyUSB2
+export SMARTCART_RFID_PORT1=/dev/ttyUSB0
+export SMARTCART_RFID_PORT2=/dev/ttyUSB1

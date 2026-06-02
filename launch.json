@@ -1,0 +1,14 @@
+import os
+import runpy
+import sys
+from pathlib import Path
+
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+UI_ENTRY = PROJECT_DIR / "ui" / "intro" / "run_smartcart_intro_800.py"
+
+
+if __name__ == "__main__":
+    os.chdir(UI_ENTRY.parent)
+    sys.path.insert(0, str(UI_ENTRY.parent))
+    runpy.run_path(str(UI_ENTRY), run_name="__main__")

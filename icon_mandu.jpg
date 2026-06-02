@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
+
+export SMARTCART_DB_HOST="${SMARTCART_DB_HOST:-localhost}"
+export SMARTCART_DB_PORT="${SMARTCART_DB_PORT:-3306}"
+export SMARTCART_DB_NAME="${SMARTCART_DB_NAME:-smartcart}"
+export SMARTCART_LOADCELL_PORT="${SMARTCART_LOADCELL_PORT:-${SMARTCART_SERIAL_PORT:-/dev/ttyUSB2}}"
+export SMARTCART_RFID_PORT1="${SMARTCART_RFID_PORT1:-/dev/ttyUSB0}"
+export SMARTCART_RFID_PORT2="${SMARTCART_RFID_PORT2:-/dev/ttyUSB1}"
+export SMARTCART_USE_EXTERNAL_LOGIN=1
+
+if [ -f "$SCRIPT_DIR/run_smartcart.local.sh" ]; then
+  # Optional machine-specific overrides, for example DB user/password or serial port.
+  # shellcheck source=/dev/null
+  . "$SCRIPT_DIR/run_smartcart.local.sh"
+fi
+
+if [ -x "$VENV_PYTHON" ]; then
+  PYTHON_EXE="$VENV_PYTHON"
+else
+  PYTHON_EXE="$(command -v python3 || true)"
+fi
+
+if [ -z "${PYTHON_EXE:-}" ]; then
+  echo "[ERROR] python3 executable not found."
+  exit 1
+fi
+
+if [ -z "${DISPLAY:-}" ]; then
+  if [ -f "/home/bkm/.Xauthority" ]; then
+    export DISPLAY=":0"
+    export XAUTHORITY="/home/bkm/.Xauthority"
+    echo "[INFO] DISPLAY not set. Using DISPLAY=${DISPLAY} and XAUTHORITY=${XAUTHORITY}."
+  else
+    echo "[WARN] DISPLAY is not set. UI 실행이 안 될 수 있습니다."
+  fi
+fi
+
+echo "======================================"
+echo "SmartCart Linux Launcher"
+echo "1. Arduino USB/serial connection complete"
+echo "2. MariaDB smartcart DB server running"
+echo "3. DB target: ${SMARTCART_DB_HOST}:${SMARTCART_DB_PORT}/${SMARTCART_DB_NAME}"
+echo "4. Loadcell serial port: ${SMARTCART_LOADCELL_PORT}"
+echo "5. RFID reader ports: ${SMARTCART_RFID_PORT1}, ${SMARTCART_RFID_PORT2}"
+echo "6. Press Enter to start Python programs"
+echo "======================================"
+read -r
+
+"$PYTHON_EXE" "$PROJECT_DIR/backend/bootstrap_smartcart_db.py"
+
+cd "$PROJECT_DIR/backend/rfid"
+"$PYTHON_EXE" db_sending.py &
+BACKEND_PID=$!
+
+cleanup() {
+  if kill -0 "$BACKEND_PID" >/dev/null 2>&1; then
+    kill "$BACKEND_PID" >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup EXIT INT TERM
+
+cd "$PROJECT_DIR/backend"
+"$PYTHON_EXE" launch_pretty_ui.py

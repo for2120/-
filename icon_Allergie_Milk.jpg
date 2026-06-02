@@ -1,0 +1,109 @@
+USE smartcart;
+
+ALTER TABLE products
+  ADD COLUMN IF NOT EXISTS weight_tolerance_g FLOAT DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS weight_tolerance_percent FLOAT DEFAULT NULL;
+
+ALTER TABLE cart_items
+  ADD COLUMN IF NOT EXISTS allowed_tolerance_g FLOAT DEFAULT NULL;
+
+ALTER TABLE cart_event_log
+  ADD COLUMN IF NOT EXISTS item_weight_g FLOAT DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS total_weight_g FLOAT DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS allowed_tolerance_g FLOAT DEFAULT NULL;
+
+UPDATE products
+SET product_name = '1번 태그 만두',
+    price = 9900,
+    image_url = 'icon_mandu.jpg',
+    category_name = '간편식',
+    zone_id = 3,
+    standard_weight_g = 749.1,
+    weight_tolerance_g = 50.0,
+    weight_tolerance_percent = 0.067,
+    product_desc = '1번 태그 실측 무게 반영 (밀 성분 포함)'
+WHERE product_id = 6;
+
+UPDATE products
+SET product_name = '2번 태그 요거트',
+    price = 3500,
+    image_url = 'icon_yogurt.jpg',
+    category_name = '유제품',
+    zone_id = 1,
+    standard_weight_g = 282.7,
+    weight_tolerance_g = 25.0,
+    weight_tolerance_percent = 0.09,
+    product_desc = '2번 태그 실측 무게 반영 (우유 성분 포함)'
+WHERE product_id = 5;
+
+UPDATE products
+SET product_name = '3번 태그 견과스낵',
+    price = 4500,
+    image_url = 'icon_potatochip.jpg',
+    category_name = '과자',
+    zone_id = 2,
+    standard_weight_g = 492.3,
+    weight_tolerance_g = 35.0,
+    weight_tolerance_percent = 0.071,
+    product_desc = '3번 태그 실측 무게 반영 (땅콩 성분 포함)'
+WHERE product_id = 13;
+
+UPDATE rfid_tags
+SET product_id = 6
+WHERE tag_uid = 'B3-36-D9-27';
+
+UPDATE rfid_tags
+SET product_id = 5
+WHERE tag_uid = 'B1-4D-C0-01';
+
+UPDATE rfid_tags
+SET product_id = 13
+WHERE tag_uid = '33-94-C5-2F';
+
+UPDATE rfid_tags
+SET product_id = 13
+WHERE tag_uid = 'F3-B5-03-01';
+
+DELETE FROM product_ingredients
+WHERE product_id IN (5, 6, 13);
+
+INSERT INTO product_ingredients (product_id, ingredient_id) VALUES
+(5, 2),
+(6, 6),
+(6, 10),
+(13, 4);
+
+UPDATE user_profiles
+SET special_note = '1번 태그 시연용 고객, 밀 알레르기'
+WHERE user_id = 11;
+
+UPDATE user_profiles
+SET special_note = '2번 태그 시연용 고객, 우유 알레르기'
+WHERE user_id = 12;
+
+UPDATE user_profiles
+SET special_note = '3번 태그 시연용 고객, 땅콩 알레르기'
+WHERE user_id = 13;
+
+DELETE FROM user_conditions
+WHERE user_id IN (11, 12, 13);
+
+INSERT INTO user_conditions (user_id, condition_type, ingredient_id, condition_value, severity) VALUES
+(11, 'allergy', 6, '밀 알레르기', '높음'),
+(11, 'preference', NULL, '만두 선호', '중간'),
+(12, 'allergy', 2, '우유 알레르기', '높음'),
+(12, 'preference', NULL, '요거트 선호', '낮음'),
+(13, 'allergy', 4, '땅콩 알레르기', '높음'),
+(13, 'preference', NULL, '과자 선호', '중간');
+
+UPDATE cart_items
+SET allowed_tolerance_g = 50.0
+WHERE product_id = 6 AND allowed_tolerance_g IS NULL;
+
+UPDATE cart_items
+SET allowed_tolerance_g = 25.0
+WHERE product_id = 5 AND allowed_tolerance_g IS NULL;
+
+UPDATE cart_items
+SET allowed_tolerance_g = 35.0
+WHERE product_id = 13 AND allowed_tolerance_g IS NULL;

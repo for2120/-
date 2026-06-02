@@ -1,0 +1,1055 @@
+-- =========================================================
+-- SmartCart 간소화 최종 DB
+-- 총 15개 테이블
+-- RFID + 알레르기/특이사항 + AP/RSSI 구역판별 + KNN 학습 더미 + 추천결과
+-- =========================================================
+
+SET NAMES utf8mb4 COLLATE utf8mb4_general_ci;
+
+DROP DATABASE IF EXISTS smartcart;
+
+CREATE DATABASE smartcart
+  DEFAULT CHARACTER SET utf8mb4
+  DEFAULT COLLATE utf8mb4_general_ci;
+
+USE smartcart;
+SHOW TABLES;
+
+SET FOREIGN_KEY_CHECKS = 0;
+
+-- =========================================================
+-- 1. 기본 테이블
+-- =========================================================
+
+CREATE TABLE users (
+  user_id INT NOT NULL AUTO_INCREMENT,
+  user_name VARCHAR(50) NOT NULL,
+  PRIMARY KEY (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE ingredients (
+  ingredient_id INT NOT NULL AUTO_INCREMENT,
+  ingredient_name VARCHAR(100) NOT NULL,
+  PRIMARY KEY (ingredient_id),
+  UNIQUE KEY uk_ingredient_name (ingredient_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE zones (
+  zone_id INT NOT NULL AUTO_INCREMENT,
+  zone_code VARCHAR(10) NOT NULL,
+  zone_name VARCHAR(50) NOT NULL,
+  ui_page VARCHAR(100) DEFAULT NULL,
+  description VARCHAR(255) DEFAULT NULL,
+  PRIMARY KEY (zone_id),
+  UNIQUE KEY uk_zone_code (zone_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- =========================================================
+-- 2. 상품 / RFID / 성분
+-- =========================================================
+
+CREATE TABLE products (
+  product_id INT NOT NULL AUTO_INCREMENT,
+  product_name VARCHAR(100) NOT NULL,
+  price INT NOT NULL,
+  image_url VARCHAR(255) DEFAULT NULL,
+  category_name VARCHAR(50) DEFAULT NULL,
+  zone_id INT DEFAULT NULL,
+  standard_weight_g FLOAT DEFAULT NULL,
+  weight_tolerance_g FLOAT DEFAULT NULL,
+  weight_tolerance_percent FLOAT DEFAULT NULL,
+  product_desc VARCHAR(255) DEFAULT NULL,
+  PRIMARY KEY (product_id),
+  KEY fk_products_zone (zone_id),
+  CONSTRAINT fk_products_zone
+    FOREIGN KEY (zone_id) REFERENCES zones(zone_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE rfid_tags (
+  tag_uid VARCHAR(64) NOT NULL,
+  product_id INT NOT NULL,
+  PRIMARY KEY (tag_uid),
+  KEY fk_rfid_tags_product (product_id),
+  CONSTRAINT fk_rfid_tags_product
+    FOREIGN KEY (product_id) REFERENCES products(product_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE product_ingredients (
+  product_id INT NOT NULL,
+  ingredient_id INT NOT NULL,
+  PRIMARY KEY (product_id, ingredient_id),
+  KEY fk_product_ingredients_ingredient (ingredient_id),
+  CONSTRAINT fk_product_ingredients_product
+    FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE CASCADE,
+  CONSTRAINT fk_product_ingredients_ingredient
+    FOREIGN KEY (ingredient_id) REFERENCES ingredients(ingredient_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- =========================================================
+-- 3. 회원 프로필 / 특이사항
+-- user_conditions = 기존 user_allergies 확장 버전
+-- condition_type: allergy, religion, diet, preference 등
+-- =========================================================
+
+CREATE TABLE user_profiles (
+  user_id INT NOT NULL,
+  age_group VARCHAR(20) DEFAULT NULL,
+  gender VARCHAR(20) DEFAULT NULL,
+  budget_level VARCHAR(20) DEFAULT NULL,
+  preferred_category VARCHAR(50) DEFAULT NULL,
+  spicy_preference INT DEFAULT NULL,
+  health_preference VARCHAR(100) DEFAULT NULL,
+  special_note VARCHAR(255) DEFAULT NULL,
+  PRIMARY KEY (user_id),
+  CONSTRAINT fk_user_profiles_user
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE user_conditions (
+  condition_id INT NOT NULL AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  condition_type VARCHAR(50) NOT NULL,
+  ingredient_id INT DEFAULT NULL,
+  condition_value VARCHAR(100) DEFAULT NULL,
+  severity VARCHAR(20) DEFAULT NULL,
+  PRIMARY KEY (condition_id),
+  KEY fk_user_conditions_user (user_id),
+  KEY fk_user_conditions_ingredient (ingredient_id),
+  CONSTRAINT fk_user_conditions_user
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_conditions_ingredient
+    FOREIGN KEY (ingredient_id) REFERENCES ingredients(ingredient_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- =========================================================
+-- 4. 장바구니
+-- 로드셀 검증은 별도 로그 테이블 없이 cart_items에 포함
+-- =========================================================
+
+CREATE TABLE cart_items (
+  cart_item_id INT NOT NULL AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  product_id INT NOT NULL,
+  quantity INT NOT NULL DEFAULT 1,
+  expected_weight_g FLOAT DEFAULT NULL,
+  measured_weight_g FLOAT DEFAULT NULL,
+  allowed_tolerance_g FLOAT DEFAULT NULL,
+  weight_matched TINYINT(1) DEFAULT NULL,
+  added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (cart_item_id),
+  KEY fk_cart_items_user (user_id),
+  KEY fk_cart_items_product (product_id),
+  CONSTRAINT fk_cart_items_user
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_cart_items_product
+    FOREIGN KEY (product_id) REFERENCES products(product_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE cart_event_log (
+  event_id INT NOT NULL AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  event_type VARCHAR(30) NOT NULL,
+  tag_uid VARCHAR(64) DEFAULT NULL,
+  product_id INT DEFAULT NULL,
+  product_name VARCHAR(100) DEFAULT NULL,
+  message VARCHAR(255) NOT NULL,
+  item_weight_g FLOAT DEFAULT NULL,
+  total_weight_g FLOAT DEFAULT NULL,
+  allowed_tolerance_g FLOAT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (event_id),
+  KEY idx_cart_event_log_user_created (user_id, created_at),
+  KEY idx_cart_event_log_product (product_id),
+  CONSTRAINT fk_cart_event_log_user
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_cart_event_log_product
+    FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE app_runtime_state (
+  state_id TINYINT NOT NULL,
+  active_user_id INT DEFAULT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (state_id),
+  KEY fk_app_runtime_state_user (active_user_id),
+  CONSTRAINT fk_app_runtime_state_user
+    FOREIGN KEY (active_user_id) REFERENCES users(user_id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE app_login_accounts (
+  account_id INT NOT NULL AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  login_id VARCHAR(50) NOT NULL,
+  login_password VARCHAR(100) NOT NULL,
+  display_name VARCHAR(100) DEFAULT NULL,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  PRIMARY KEY (account_id),
+  UNIQUE KEY uk_app_login_accounts_login_id (login_id),
+  KEY fk_app_login_accounts_user (user_id),
+  CONSTRAINT fk_app_login_accounts_user
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- =========================================================
+-- 5. KNN 학습용 구매이력
+-- =========================================================
+
+CREATE TABLE purchase_history (
+  history_id INT NOT NULL AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  product_id INT NOT NULL,
+  quantity INT NOT NULL DEFAULT 1,
+  purchased_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (history_id),
+  KEY fk_purchase_history_user (user_id),
+  KEY fk_purchase_history_product (product_id),
+  CONSTRAINT fk_purchase_history_user
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_purchase_history_product
+    FOREIGN KEY (product_id) REFERENCES products(product_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- =========================================================
+-- 6. AP / RSSI 구역 판별
+-- zone_ap_rssi = 학교 내부 AP 조사 후 만든 구역별 평균 RSSI 기준값
+-- ap_current_scans = 라즈베리파이가 실시간으로 스캔한 값 더미
+-- =========================================================
+
+CREATE TABLE access_points (
+  ap_id INT NOT NULL AUTO_INCREMENT,
+  ssid VARCHAR(100) DEFAULT NULL,
+  bssid VARCHAR(50) NOT NULL,
+  location_hint VARCHAR(100) DEFAULT NULL,
+  PRIMARY KEY (ap_id),
+  UNIQUE KEY uk_access_points_bssid (bssid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE zone_ap_rssi (
+  rssi_id INT NOT NULL AUTO_INCREMENT,
+  zone_id INT NOT NULL,
+  ap_id INT NOT NULL,
+  avg_rssi FLOAT NOT NULL,
+  sample_count INT DEFAULT 0,
+  PRIMARY KEY (rssi_id),
+  UNIQUE KEY uk_zone_ap (zone_id, ap_id),
+  KEY fk_zone_ap_rssi_zone (zone_id),
+  KEY fk_zone_ap_rssi_ap (ap_id),
+  CONSTRAINT fk_zone_ap_rssi_zone
+    FOREIGN KEY (zone_id) REFERENCES zones(zone_id) ON DELETE CASCADE,
+  CONSTRAINT fk_zone_ap_rssi_ap
+    FOREIGN KEY (ap_id) REFERENCES access_points(ap_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE ap_current_scans (
+  scan_id INT NOT NULL AUTO_INCREMENT,
+  scan_group_id INT NOT NULL,
+  user_id INT DEFAULT NULL,
+  ap_id INT NOT NULL,
+  current_rssi FLOAT NOT NULL,
+  scanned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (scan_id),
+  KEY fk_ap_current_scans_user (user_id),
+  KEY fk_ap_current_scans_ap (ap_id),
+  CONSTRAINT fk_ap_current_scans_user
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE SET NULL,
+  CONSTRAINT fk_ap_current_scans_ap
+    FOREIGN KEY (ap_id) REFERENCES access_points(ap_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- =========================================================
+-- 7. KNN 학습 완료 데이터 / 추천 결과
+-- knn_training_vectors = Python pandas로 전처리/학습한 결과를 저장했다고 가정
+-- recommendations = KNN 추천 결과 저장
+-- =========================================================
+
+CREATE TABLE knn_training_vectors (
+  vector_id INT NOT NULL AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  age_score FLOAT DEFAULT 0,
+  budget_score FLOAT DEFAULT 0,
+  spicy_score FLOAT DEFAULT 0,
+  beverage_count FLOAT DEFAULT 0,
+  snack_count FLOAT DEFAULT 0,
+  ramen_count FLOAT DEFAULT 0,
+  living_count FLOAT DEFAULT 0,
+  instant_count FLOAT DEFAULT 0,
+  allergy_milk TINYINT(1) DEFAULT 0,
+  allergy_peanut TINYINT(1) DEFAULT 0,
+  allergy_wheat TINYINT(1) DEFAULT 0,
+  allergy_shrimp TINYINT(1) DEFAULT 0,
+  total_purchase_count INT DEFAULT 0,
+  trained_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (vector_id),
+  KEY fk_knn_training_vectors_user (user_id),
+  CONSTRAINT fk_knn_training_vectors_user
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE recommendations (
+  recommendation_id INT NOT NULL AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  zone_id INT DEFAULT NULL,
+  product_id INT NOT NULL,
+  score FLOAT DEFAULT NULL,
+  reason VARCHAR(255) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (recommendation_id),
+  KEY fk_recommendations_user (user_id),
+  KEY fk_recommendations_zone (zone_id),
+  KEY fk_recommendations_product (product_id),
+  CONSTRAINT fk_recommendations_user
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_recommendations_zone
+    FOREIGN KEY (zone_id) REFERENCES zones(zone_id),
+  CONSTRAINT fk_recommendations_product
+    FOREIGN KEY (product_id) REFERENCES products(product_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+SET FOREIGN_KEY_CHECKS = 1;
+
+-- =========================================================
+-- 8. 더미 데이터 INSERT
+-- =========================================================
+
+INSERT INTO users (user_id, user_name) VALUES
+(1, '백경민'),
+(2, '이준호'),
+(3, '황종원'),
+(4, '김민수'),
+(5, '박지훈'),
+(6, '최서연'),
+(7, '정다은'),
+(8, '윤현우'),
+(9, '강지민'),
+(10, '오세준'),
+(11, '시연고객A'),
+(12, '시연고객B'),
+(13, '시연고객C');
+
+INSERT INTO ingredients (ingredient_id, ingredient_name) VALUES
+(1, '알류'),
+(2, '우유'),
+(3, '메밀'),
+(4, '땅콩'),
+(5, '대두'),
+(6, '밀'),
+(7, '고등어'),
+(8, '게'),
+(9, '새우'),
+(10, '돼지고기'),
+(11, '복숭아'),
+(12, '토마토'),
+(13, '이산화황'),
+(14, '아황산류'),
+(15, '호두'),
+(16, '닭고기'),
+(17, '쇠고기'),
+(18, '오징어'),
+(19, '굴'),
+(20, '전복'),
+(21, '홍합'),
+(22, '잣');
+
+INSERT INTO zones (zone_id, zone_code, zone_name, ui_page, description) VALUES
+(1, 'A', '음료 코너', 'beverage_ui', '음료, 생수, 유제품 진열 구역'),
+(2, 'B', '과자 코너', 'snack_ui', '과자, 간식류 진열 구역'),
+(3, 'C', '라면/간편식 코너', 'ramen_ui', '라면, 만두, 즉석식품 진열 구역'),
+(4, 'D', '생활용품 코너', 'living_ui', '세제, 휴지 등 생활용품 진열 구역');
+
+INSERT INTO products
+(product_id, product_name, price, image_url, category_name, zone_id, standard_weight_g, weight_tolerance_g, weight_tolerance_percent, product_desc)
+VALUES
+(1, '땅콩버터', 15000, 'icon_peanut.jpg', '소스', 2, 340, 30, 0.12, '땅콩 함유 스프레드'),
+(2, '맛있는 우유', 5000, 'icon_milk.jpg', '유제품', 1, 1000, 80, 0.08, '우유 성분 포함'),
+(3, '어묵', 2000, 'icon_fishcake.jpg', '간편식', 3, 300, 30, 0.12, '생선 성분 포함 간편식'),
+(4, '새우깡', 1800, 'icon_ggang.jpg', '과자', 2, 90, 15, 0.18, '새우 성분 포함 과자'),
+(5, '2번 태그 요거트', 3500, 'icon_yogurt.jpg', '유제품', 1, 282.7, 25, 0.09, '2번 태그 실측 무게 반영 (우유 성분 포함)'),
+(6, '1번 태그 만두', 9900, 'icon_mandu.jpg', '간편식', 3, 749.1, 50, 0.067, '1번 태그 실측 무게 반영 (밀 성분 포함)'),
+(7, '콜라', 2000, 'icon_cola.jpg', '음료', 1, 500, 40, 0.10, '탄산음료'),
+(8, '생수', 1000, 'icon_water.jpg', '음료', 1, 500, 40, 0.10, '생수'),
+(9, '신라면', 1200, 'icon_ramen.jpg', '라면', 3, 120, 18, 0.15, '밀 포함 라면'),
+(10, '짜파게티', 1300, 'icon_jjapagetti.jpg', '라면', 3, 140, 20, 0.15, '밀, 대두 포함'),
+(11, '세제', 8000, 'icon_detergent.jpg', '생활용품', 4, 1500, 120, 0.08, '생활 세제'),
+(12, '휴지', 12000, 'icon_tissue.jpg', '생활용품', 4, 2000, 150, 0.08, '생활용품'),
+(13, '3번 태그 견과스낵', 4500, 'icon_potatochip.jpg', '과자', 2, 492.3, 35, 0.071, '3번 태그 실측 무게 반영 (땅콩 성분 포함)'),
+(14, '초코바', 1500, 'icon_chocobar.jpg', '과자', 2, 50, 12, 0.20, '우유, 대두 포함 간식'),
+(15, '요거트', 3500, 'icon_yogurt.jpg', '유제품', 1, 450, 35, 0.10, '우유 성분 포함'),
+(16, '계란과자', 2500, 'icon_egg_snack.jpg', '과자', 2, 80, 15, 0.18, '알류, 밀 포함 과자'),
+(17, '참치캔', 3000, 'icon_tuna.jpg', '간편식', 3, 161.6, 25, 0.155, '실물 테스트 기준 무게 반영'),
+(18, '오징어칩', 2200, 'icon_squid_chip.jpg', '과자', 2, 95, 15, 0.16, '오징어 성분 포함'),
+(19, '복숭아음료', 1800, 'icon_peach_drink.jpg', '음료', 1, 350, 30, 0.12, '복숭아 함유 음료'),
+(20, '닭가슴살팩', 4500, 'icon_chicken.jpg', '간편식', 3, 200, 25, 0.12, '닭고기 포함 간편식');
+
+INSERT INTO rfid_tags (tag_uid, product_id) VALUES
+('B3-36-D9-27', 6),
+('33-94-C5-2F', 13),
+('F6-29-46-02', 3),
+('F3-B5-03-01', 13),
+('B1-4D-C0-01', 5),
+('21-4B-C1-01', 6),
+('AA-11-22-33', 7),
+('AA-11-22-34', 8),
+('AA-11-22-35', 9),
+('AA-11-22-36', 10),
+('AA-11-22-37', 11),
+('AA-11-22-38', 12),
+('AA-11-22-39', 13),
+('AA-11-22-40', 14),
+('AA-11-22-41', 15),
+('AA-11-22-42', 16),
+('AA-11-22-43', 17),
+('AA-11-22-44', 18),
+('AA-11-22-45', 19),
+('AA-11-22-46', 20);
+
+INSERT INTO product_ingredients (product_id, ingredient_id) VALUES
+(1, 4),
+(2, 2),
+(3, 7),
+(4, 9),
+(5, 2),
+(6, 6),
+(6, 10),
+(13, 4),
+(9, 6),
+(10, 6),
+(10, 5),
+(14, 2),
+(14, 5),
+(15, 2),
+(16, 1),
+(16, 6),
+(17, 7),
+(18, 18),
+(19, 11),
+(20, 16);
+
+INSERT INTO user_profiles
+(user_id, age_group, gender, budget_level, preferred_category, spicy_preference, health_preference, special_note)
+VALUES
+(1, '20대', '남성', '중간', '과자', 3, '저당 선호', '우유, 땅콩 알레르기'),
+(2, '20대', '남성', '낮음', '과자', 4, '간식 선호', '새우 알레르기'),
+(3, '20대', '남성', '중간', '라면', 5, '매운맛 선호', '밀 알레르기'),
+(4, '30대', '여성', '높음', '유제품', 2, '유제품 선호', '알류 알레르기'),
+(5, '40대', '남성', '중간', '간편식', 3, '간편식 선호', '돼지고기 제한'),
+(6, '20대', '여성', '낮음', '음료', 1, '저칼로리 선호', '우유 알레르기'),
+(7, '30대', '여성', '중간', '과자', 2, '대두 주의', '대두 알레르기'),
+(8, '20대', '남성', '낮음', '과자', 4, '가성비 선호', '땅콩 알레르기'),
+(9, '50대', '남성', '높음', '간편식', 2, '단백질 선호', '생선 알레르기'),
+(10, '20대', '여성', '중간', '라면', 5, '매운 음식 선호', '밀 알레르기'),
+(11, '20대', '남성', '중간', '간편식', 3, '소화 예민', '1번 태그 시연용 고객, 밀 알레르기'),
+(12, '20대', '여성', '중간', '유제품', 1, '저당 선호', '2번 태그 시연용 고객, 우유 알레르기'),
+(13, '20대', '남성', '낮음', '과자', 4, '간식 선호', '3번 태그 시연용 고객, 땅콩 알레르기');
+
+INSERT INTO user_conditions
+(user_id, condition_type, ingredient_id, condition_value, severity)
+VALUES
+(1, 'allergy', 2, '우유 알레르기', '높음'),
+(1, 'allergy', 4, '땅콩 알레르기', '높음'),
+(1, 'diet', NULL, '저당 선호', '중간'),
+(2, 'allergy', 9, '새우 알레르기', '높음'),
+(2, 'preference', NULL, '짭짤한 과자 선호', '낮음'),
+(3, 'allergy', 6, '밀 알레르기', '높음'),
+(3, 'preference', NULL, '매운 라면 선호', '중간'),
+(4, 'allergy', 1, '알류 알레르기', '높음'),
+(5, 'religion', 10, '돼지고기 제한', '높음'),
+(6, 'allergy', 2, '우유 알레르기', '높음'),
+(7, 'allergy', 5, '대두 알레르기', '중간'),
+(8, 'allergy', 4, '땅콩 알레르기', '높음'),
+(9, 'allergy', 7, '생선 알레르기', '높음'),
+(10, 'allergy', 6, '밀 알레르기', '높음'),
+(11, 'allergy', 6, '밀 알레르기', '높음'),
+(11, 'preference', NULL, '만두 선호', '중간'),
+(12, 'allergy', 2, '우유 알레르기', '높음'),
+(12, 'preference', NULL, '요거트 선호', '낮음'),
+(13, 'allergy', 4, '땅콩 알레르기', '높음'),
+(13, 'preference', NULL, '과자 선호', '중간');
+
+INSERT INTO app_runtime_state (state_id, active_user_id)
+VALUES (1, 11);
+
+INSERT INTO app_login_accounts (user_id, login_id, login_password, display_name, is_active) VALUES
+(11, 'demoa', '1234', '시연고객A', 1),
+(12, 'demob', '1234', '시연고객B', 1),
+(13, 'democ', '1234', '시연고객C', 1);
+
+-- 시연 시작 시 모든 고객 장바구니는 빈 상태로 시작
+
+-- =========================================================
+-- 9. KNN 학습용 구매이력 더미 데이터
+-- 실제 과거 구매 데이터가 쌓였다고 가정
+-- =========================================================
+
+INSERT INTO purchase_history
+(user_id, product_id, quantity, purchased_at)
+VALUES
+(1, 7, 2, '2026-04-01 10:00:00'),
+(1, 13, 1, '2026-04-01 10:00:00'),
+(1, 4, 1, '2026-04-01 10:00:00'),
+
+(2, 4, 2, '2026-04-02 11:00:00'),
+(2, 13, 1, '2026-04-02 11:00:00'),
+(2, 8, 1, '2026-04-02 11:00:00'),
+
+(3, 9, 2, '2026-04-03 12:00:00'),
+(3, 10, 1, '2026-04-03 12:00:00'),
+(3, 20, 1, '2026-04-03 12:00:00'),
+
+(4, 2, 1, '2026-04-04 13:00:00'),
+(4, 15, 1, '2026-04-04 13:00:00'),
+
+(5, 6, 1, '2026-04-05 14:00:00'),
+(5, 20, 1, '2026-04-05 14:00:00'),
+
+(6, 8, 3, '2026-04-06 15:00:00'),
+(6, 19, 1, '2026-04-06 15:00:00'),
+
+(7, 10, 1, '2026-04-07 16:00:00'),
+(7, 13, 2, '2026-04-07 16:00:00'),
+
+(8, 4, 1, '2026-04-08 17:00:00'),
+(8, 13, 3, '2026-04-08 17:00:00'),
+(8, 16, 1, '2026-04-08 17:00:00'),
+
+(9, 17, 2, '2026-04-09 18:00:00'),
+(9, 20, 1, '2026-04-09 18:00:00'),
+
+(10, 9, 2, '2026-04-10 19:00:00'),
+(10, 10, 2, '2026-04-10 19:00:00');
+
+-- =========================================================
+-- 10. AP 조사 완료 더미 데이터
+-- 학교 내부 AP의 SSID/BSSID/RSSI를 조사했다고 가정
+-- =========================================================
+
+INSERT INTO access_points (ap_id, ssid, bssid, location_hint) VALUES
+(1, 'School_WiFi', '00:11:22:33:44:01', 'A구역 음료 코너 근처 AP'),
+(2, 'School_WiFi', '00:11:22:33:44:02', 'B구역 과자 코너 근처 AP'),
+(3, 'School_WiFi', '00:11:22:33:44:03', 'C구역 라면 코너 근처 AP'),
+(4, 'School_WiFi', '00:11:22:33:44:04', 'D구역 생활용품 코너 근처 AP'),
+(5, 'School_WiFi', '00:11:22:33:44:05', '복도 공용 AP'),
+(6, 'Campus_Free_WiFi', '00:11:22:33:44:06', '실습실 보조 AP');
+
+-- 구역별 평균 RSSI 기준값
+-- A/B/C/D 구역에서 여러 번 측정한 뒤 평균값을 DB에 저장했다고 가정
+INSERT INTO zone_ap_rssi
+(zone_id, ap_id, avg_rssi, sample_count)
+VALUES
+-- A구역: 음료 코너
+(1, 1, -43, 20),
+(1, 2, -70, 20),
+(1, 3, -82, 20),
+(1, 4, -88, 20),
+(1, 5, -66, 20),
+(1, 6, -73, 20),
+
+-- B구역: 과자 코너
+(2, 1, -69, 20),
+(2, 2, -44, 20),
+(2, 3, -73, 20),
+(2, 4, -86, 20),
+(2, 5, -61, 20),
+(2, 6, -67, 20),
+
+-- C구역: 라면/간편식 코너
+(3, 1, -81, 20),
+(3, 2, -73, 20),
+(3, 3, -45, 20),
+(3, 4, -71, 20),
+(3, 5, -61, 20),
+(3, 6, -59, 20),
+
+-- D구역: 생활용품 코너
+(4, 1, -87, 20),
+(4, 2, -83, 20),
+(4, 3, -71, 20),
+(4, 4, -46, 20),
+(4, 5, -65, 20),
+(4, 6, -75, 20);
+
+-- 라즈베리파이가 현재 주변 AP를 실시간 스캔했다고 가정
+-- scan_group_id = 1은 1번 사용자가 B구역 과자 코너 근처에 있는 상황
+INSERT INTO ap_current_scans
+(scan_group_id, user_id, ap_id, current_rssi, scanned_at)
+VALUES
+(1, 1, 1, -67, '2026-04-27 19:03:00'),
+(1, 1, 2, -44, '2026-04-27 19:03:00'),
+(1, 1, 3, -73, '2026-04-27 19:03:00'),
+(1, 1, 4, -86, '2026-04-27 19:03:00'),
+(1, 1, 5, -61, '2026-04-27 19:03:00'),
+(1, 1, 6, -67, '2026-04-27 19:03:00'),
+
+-- scan_group_id = 2는 3번 사용자가 C구역 라면 코너 근처에 있는 상황
+(2, 3, 1, -82, '2026-04-27 18:35:00'),
+(2, 3, 2, -73, '2026-04-27 18:35:00'),
+(2, 3, 3, -45, '2026-04-27 18:35:00'),
+(2, 3, 4, -71, '2026-04-27 18:35:00'),
+(2, 3, 5, -61, '2026-04-27 18:35:00'),
+(2, 3, 6, -59, '2026-04-27 18:35:00');
+
+-- =========================================================
+-- 11. KNN 학습 완료 더미 데이터
+-- Python pandas로 회원 프로필 + 구매이력 + 알레르기를 벡터화했다고 가정
+-- =========================================================
+
+INSERT INTO knn_training_vectors
+(user_id, age_score, budget_score, spicy_score, beverage_count, snack_count, ramen_count, living_count, instant_count,
+ allergy_milk, allergy_peanut, allergy_wheat, allergy_shrimp, total_purchase_count, trained_at)
+VALUES
+(1, 20, 2, 3, 2, 3, 0, 0, 0, 1, 1, 0, 0, 4, '2026-04-27 18:55:00'),
+(2, 20, 1, 4, 1, 4, 0, 0, 0, 0, 0, 0, 1, 4, '2026-04-27 18:55:00'),
+(3, 20, 2, 5, 0, 0, 3, 0, 1, 0, 0, 1, 0, 4, '2026-04-27 18:55:00'),
+(4, 30, 3, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, '2026-04-27 18:55:00'),
+(5, 40, 2, 3, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, '2026-04-27 18:55:00'),
+(6, 20, 1, 1, 4, 0, 0, 0, 0, 1, 0, 0, 0, 4, '2026-04-27 18:55:00'),
+(7, 30, 2, 2, 0, 2, 1, 0, 0, 0, 0, 0, 0, 3, '2026-04-27 18:55:00'),
+(8, 20, 1, 4, 0, 5, 0, 0, 0, 0, 1, 0, 0, 5, '2026-04-27 18:55:00'),
+(9, 50, 3, 2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 3, '2026-04-27 18:55:00'),
+(10, 20, 2, 5, 0, 0, 4, 0, 0, 0, 0, 1, 0, 4, '2026-04-27 18:55:00');
+
+-- KNN 추천 결과
+-- 1번 사용자는 현재 B구역 과자 코너에 있고,
+-- 유사 고객 2번/8번/7번의 구매이력을 참고해 추천했다고 가정
+INSERT INTO recommendations
+(user_id, zone_id, product_id, score, reason, created_at)
+VALUES
+(1, 2, 13, 0.91, '현재 B구역 과자 코너이며 유사 고객이 자주 구매한 상품', '2026-04-27 19:05:00'),
+(1, 2, 4, 0.86, '유사 고객 구매이력 기반 과자 추천', '2026-04-27 19:05:01'),
+(1, 2, 16, 0.72, '과자 코너 인기 상품 추천', '2026-04-27 19:05:02'),
+(3, 3, 20, 0.80, 'C구역 간편식 코너 추천 상품', '2026-04-27 18:37:00'),
+(6, 1, 8, 0.88, 'A구역 음료 코너 저칼로리 선호 기반 추천', '2026-04-27 19:13:00');
+
+-- =========================================================
+-- 12. 확인용 SELECT
+-- =========================================================
+
+SHOW TABLES;
+
+-- 상품 + 구역 확인
+SELECT
+  p.product_id,
+  p.product_name,
+  p.category_name,
+  p.price,
+  z.zone_code,
+  z.zone_name,
+  p.standard_weight_g
+FROM products p
+LEFT JOIN zones z ON p.zone_id = z.zone_id
+ORDER BY p.product_id;
+
+-- 1번 사용자 특이사항 확인
+SELECT
+  u.user_name,
+  uc.condition_type,
+  i.ingredient_name,
+  uc.condition_value,
+  uc.severity
+FROM user_conditions uc
+JOIN users u ON uc.user_id = u.user_id
+LEFT JOIN ingredients i ON uc.ingredient_id = i.ingredient_id
+WHERE uc.user_id = 1;
+
+-- 1번 사용자가 땅콩버터를 담았을 때 알레르기 경고 여부
+SELECT
+  u.user_name,
+  p.product_name,
+  i.ingredient_name AS warning_ingredient,
+  'WARNING' AS result
+FROM users u
+JOIN user_conditions uc ON u.user_id = uc.user_id
+JOIN ingredients i ON uc.ingredient_id = i.ingredient_id
+JOIN product_ingredients pi ON i.ingredient_id = pi.ingredient_id
+JOIN products p ON pi.product_id = p.product_id
+WHERE u.user_id = 1
+  AND uc.condition_type = 'allergy'
+  AND p.product_id = 1;
+
+-- AP 기준 RSSI 확인
+SELECT
+  z.zone_code,
+  z.zone_name,
+  ap.ssid,
+  ap.bssid,
+  zar.avg_rssi,
+  zar.sample_count
+FROM zone_ap_rssi zar
+JOIN zones z ON zar.zone_id = z.zone_id
+JOIN access_points ap ON zar.ap_id = ap.ap_id
+ORDER BY z.zone_id, ap.ap_id;
+
+-- 현재 실시간 AP 스캔값과 구역별 평균 RSSI 비교
+-- distance_score가 가장 낮은 구역이 현재 위치 후보
+SELECT
+  z.zone_code,
+  z.zone_name,
+  ROUND(SUM(ABS(acs.current_rssi - zar.avg_rssi)), 2) AS distance_score
+FROM ap_current_scans acs
+JOIN zone_ap_rssi zar ON acs.ap_id = zar.ap_id
+JOIN zones z ON zar.zone_id = z.zone_id
+WHERE acs.scan_group_id = 1
+GROUP BY z.zone_code, z.zone_name
+ORDER BY distance_score ASC;
+
+-- KNN 학습 벡터 확인
+SELECT
+  u.user_name,
+  ktv.age_score,
+  ktv.budget_score,
+  ktv.spicy_score,
+  ktv.beverage_count,
+  ktv.snack_count,
+  ktv.ramen_count,
+  ktv.instant_count,
+  ktv.allergy_milk,
+  ktv.allergy_peanut,
+  ktv.allergy_wheat,
+  ktv.allergy_shrimp,
+  ktv.total_purchase_count,
+  ktv.trained_at
+FROM knn_training_vectors ktv
+JOIN users u ON ktv.user_id = u.user_id
+ORDER BY ktv.user_id;
+
+-- KNN용 DataFrame 기본 조회 쿼리
+SELECT
+  u.user_id,
+  u.user_name,
+  up.age_group,
+  up.gender,
+  up.budget_level,
+  up.preferred_category,
+  up.spicy_preference,
+  up.health_preference,
+  p.category_name,
+  COUNT(ph.product_id) AS purchase_count
+FROM users u
+LEFT JOIN user_profiles up ON u.user_id = up.user_id
+LEFT JOIN purchase_history ph ON u.user_id = ph.user_id
+LEFT JOIN products p ON ph.product_id = p.product_id
+GROUP BY
+  u.user_id,
+  u.user_name,
+  up.age_group,
+  up.gender,
+  up.budget_level,
+  up.preferred_category,
+  up.spicy_preference,
+  up.health_preference,
+  p.category_name
+ORDER BY u.user_id, p.category_name;
+
+-- 추천 결과 확인
+SELECT
+  r.recommendation_id,
+  u.user_name,
+  z.zone_name,
+  p.product_name,
+  r.score,
+  r.reason,
+  r.created_at
+FROM recommendations r
+JOIN users u ON r.user_id = u.user_id
+LEFT JOIN zones z ON r.zone_id = z.zone_id
+JOIN products p ON r.product_id = p.product_id
+WHERE r.user_id = 1
+ORDER BY r.score DESC;
+
+USE smartcart;
+
+-- 5_27 시연용 추가 상품 8개 및 알레르기/추천 seed
+INSERT INTO products
+(product_id, product_name, price, image_url, category_name, zone_id, standard_weight_g, weight_tolerance_g, weight_tolerance_percent, product_desc)
+VALUES
+(22, 'allergy_milk', 5000, 'icon_Allergie_Milk.jpg', 'drink', 1, 1000, 80, 0.08, '우유 알레르기 시연용 상품'),
+(23, 'allergy_peanut', 4500, 'icon_Allergie_peanut.jpg', 'snack', 2, 250, 30, 0.12, '땅콩 알레르기 시연용 상품'),
+(24, 'fishball', 3500, 'icon_fishball.jpg', 'instant', 3, 300, 35, 0.12, '생선, 밀 성분 포함'),
+(25, 'shrimp_snack', 1800, 'icon_ggang.jpg', 'snack', 2, 90, 15, 0.18, '새우, 밀 성분 포함'),
+(26, 'dumpling', 9900, 'icon_mandu.jpg', 'instant', 3, 749.1, 50, 0.067, '밀, 돼지고기, 대두 성분 포함'),
+(27, 'mayo', 4500, 'icon_Mayo.jpg', 'fresh', 1, 500, 45, 0.09, '알류 성분 포함'),
+(28, 'milk', 5000, 'icon_Milk.jpg', 'drink', 1, 1000, 80, 0.08, '우유 성분 포함'),
+(29, 'peanut_butter', 6500, 'icon_peanut.jpg', 'snack', 2, 340, 35, 0.10, '땅콩 성분 포함')
+ON DUPLICATE KEY UPDATE
+  product_name = VALUES(product_name),
+  price = VALUES(price),
+  image_url = VALUES(image_url),
+  category_name = VALUES(category_name),
+  zone_id = VALUES(zone_id),
+  standard_weight_g = VALUES(standard_weight_g),
+  weight_tolerance_g = VALUES(weight_tolerance_g),
+  weight_tolerance_percent = VALUES(weight_tolerance_percent),
+  product_desc = VALUES(product_desc);
+
+DELETE FROM product_ingredients
+WHERE product_id IN (22, 23, 24, 25, 26, 27, 28, 29);
+
+INSERT INTO product_ingredients (product_id, ingredient_id) VALUES
+(22, 2),
+(23, 4),
+(24, 7),
+(24, 6),
+(25, 9),
+(25, 6),
+(26, 6),
+(26, 10),
+(26, 5),
+(27, 1),
+(28, 2),
+(29, 4);
+
+UPDATE users SET user_name = '우유 알레르기 고객' WHERE user_id = 1;
+UPDATE users SET user_name = '땅콩 알레르기 고객' WHERE user_id = 2;
+UPDATE users SET user_name = '돼지고기 제한 고객' WHERE user_id = 3;
+UPDATE users SET user_name = '해산물 알레르기 고객' WHERE user_id = 4;
+UPDATE users SET user_name = '계란 알레르기 고객' WHERE user_id = 5;
+
+DELETE FROM user_conditions
+WHERE user_id IN (1, 2, 3, 4, 5);
+
+INSERT INTO user_conditions
+(user_id, condition_type, ingredient_id, condition_value, severity)
+VALUES
+(1, 'allergy', 2, '우유 알레르기', 'high'),
+(2, 'allergy', 4, '땅콩 알레르기', 'high'),
+(3, 'religion', 10, '돼지고기 제한', 'high'),
+(4, 'allergy', 7, '생선 알레르기', 'medium'),
+(4, 'allergy', 9, '새우 알레르기', 'high'),
+(5, 'allergy', 1, '계란 알레르기', 'medium');
+
+DELETE FROM recommendations
+WHERE user_id IN (1, 2, 3, 4, 5);
+
+INSERT INTO recommendations
+(user_id, zone_id, product_id, score, reason)
+VALUES
+(1, 2, 23, 0.91, '시연용 추천: 간식 구역 관심'),
+(1, 3, 26, 0.84, '시연용 추천: 간편식 선호'),
+(2, 1, 28, 0.88, '시연용 추천: 음료 구역 선호'),
+(2, 3, 24, 0.82, '시연용 추천: 간편식 관심'),
+(3, 1, 27, 0.86, '시연용 추천: 신선/냉장 상품'),
+(3, 2, 25, 0.80, '시연용 추천: 과자 구역 관심'),
+(4, 1, 22, 0.83, '시연용 추천: 음료 구역'),
+(4, 2, 29, 0.78, '시연용 추천: 간식 상품'),
+(5, 2, 25, 0.87, '시연용 추천: 과자 구역'),
+(5, 3, 26, 0.79, '시연용 추천: 간편식 상품');
+
+DELETE FROM app_login_accounts
+WHERE user_id IN (1, 2, 3, 4, 5);
+
+INSERT INTO app_login_accounts
+(user_id, login_id, login_password, display_name, is_active)
+VALUES
+(1, 'milkuser', '1234', '우유 알레르기 고객', 1),
+(2, 'peanutuser', '1234', '땅콩 알레르기 고객', 1),
+(3, 'porkuser', '1234', '돼지고기 제한 고객', 1),
+(4, 'seafooduser', '1234', '해산물 알레르기 고객', 1),
+(5, 'egguser', '1234', '계란 알레르기 고객', 1)
+ON DUPLICATE KEY UPDATE
+  login_id = VALUES(login_id),
+  login_password = VALUES(login_password),
+  display_name = VALUES(display_name),
+  is_active = VALUES(is_active);
+
+-- =========================================================
+-- 1. 테이블 설명 COMMENT
+-- =========================================================
+
+ALTER TABLE users COMMENT = '회원 기본 정보 테이블';
+ALTER TABLE ingredients COMMENT = '알레르기 및 상품 성분 정보 테이블';
+ALTER TABLE zones COMMENT = '매장 또는 학교 내부 구역 정보 테이블';
+ALTER TABLE products COMMENT = '상품 기본 정보 및 상품이 위치한 구역 정보 테이블';
+ALTER TABLE rfid_tags COMMENT = 'RFID 태그 UID와 상품을 연결하는 테이블';
+ALTER TABLE product_ingredients COMMENT = '상품과 성분의 다대다 관계를 저장하는 테이블';
+ALTER TABLE user_profiles COMMENT = 'KNN 추천에 사용하는 회원 프로필 정보 테이블';
+ALTER TABLE user_conditions COMMENT = '회원의 알레르기, 종교 제한, 식단 제한 등 특이사항 테이블';
+ALTER TABLE cart_items COMMENT = '현재 장바구니 상품 및 로드셀 검증 결과 테이블';
+ALTER TABLE purchase_history COMMENT = 'KNN 학습에 사용하는 과거 구매이력 테이블';
+ALTER TABLE access_points COMMENT = '학교 내부 Wi-Fi AP 정보 테이블';
+ALTER TABLE zone_ap_rssi COMMENT = '구역별 AP 평균 RSSI 기준값 테이블';
+ALTER TABLE ap_current_scans COMMENT = '라즈베리파이가 실시간으로 스캔한 AP RSSI 값 테이블';
+ALTER TABLE knn_training_vectors COMMENT = 'Python에서 전처리한 KNN 학습용 회원 벡터 테이블';
+ALTER TABLE recommendations COMMENT = 'KNN 추천 결과 저장 테이블';
+
+-- =========================================================
+-- 2. users 컬럼 설명
+-- =========================================================
+
+ALTER TABLE users
+  MODIFY COLUMN user_id INT NOT NULL AUTO_INCREMENT COMMENT '회원 기본키(PK)',
+  MODIFY COLUMN user_name VARCHAR(50) NOT NULL COMMENT '회원 이름';
+
+-- =========================================================
+-- 3. ingredients 컬럼 설명
+-- =========================================================
+
+ALTER TABLE ingredients
+  MODIFY COLUMN ingredient_id INT NOT NULL AUTO_INCREMENT COMMENT '성분 기본키(PK)',
+  MODIFY COLUMN ingredient_name VARCHAR(100) NOT NULL COMMENT '성분명 또는 알레르기 유발 성분명';
+
+-- =========================================================
+-- 4. zones 컬럼 설명
+-- =========================================================
+
+ALTER TABLE zones
+  MODIFY COLUMN zone_id INT NOT NULL AUTO_INCREMENT COMMENT '구역 기본키(PK)',
+  MODIFY COLUMN zone_code VARCHAR(10) NOT NULL COMMENT '구역 코드 예: A, B, C, D',
+  MODIFY COLUMN zone_name VARCHAR(50) NOT NULL COMMENT '구역 이름 예: 음료 코너, 과자 코너',
+  MODIFY COLUMN ui_page VARCHAR(100) DEFAULT NULL COMMENT '해당 구역에서 표시할 UI 화면 이름',
+  MODIFY COLUMN description VARCHAR(255) DEFAULT NULL COMMENT '구역 설명';
+
+-- =========================================================
+-- 5. products 컬럼 설명
+-- =========================================================
+
+ALTER TABLE products
+  MODIFY COLUMN product_id INT NOT NULL AUTO_INCREMENT COMMENT '상품 기본키(PK)',
+  MODIFY COLUMN product_name VARCHAR(100) NOT NULL COMMENT '상품명',
+  MODIFY COLUMN price INT NOT NULL COMMENT '상품 가격',
+  MODIFY COLUMN image_url VARCHAR(255) DEFAULT NULL COMMENT 'UI에 표시할 상품 이미지 경로',
+  MODIFY COLUMN category_name VARCHAR(50) DEFAULT NULL COMMENT '상품 카테고리명',
+  MODIFY COLUMN zone_id INT DEFAULT NULL COMMENT '상품이 진열된 구역 ID. zones.zone_id 참조 (N:1, 여러 상품이 하나의 구역에 속함)',
+  MODIFY COLUMN standard_weight_g FLOAT DEFAULT NULL COMMENT '로드셀 검증용 상품 기준 무게(g)',
+  MODIFY COLUMN product_desc VARCHAR(255) DEFAULT NULL COMMENT '상품 설명';
+
+-- =========================================================
+-- 6. rfid_tags 컬럼 설명
+-- =========================================================
+
+ALTER TABLE rfid_tags
+  MODIFY COLUMN tag_uid VARCHAR(64) NOT NULL COMMENT 'RFID 태그 UID. RFID 카드 또는 태그의 고유값(PK)',
+  MODIFY COLUMN product_id INT NOT NULL COMMENT '해당 RFID 태그가 가리키는 상품 ID. products.product_id 참조 (N:1, 여러 RFID 태그가 하나의 상품에 연결될 수 있음)';
+
+-- =========================================================
+-- 7. product_ingredients 컬럼 설명
+-- =========================================================
+
+ALTER TABLE product_ingredients
+  MODIFY COLUMN product_id INT NOT NULL COMMENT '성분이 포함된 상품 ID. products.product_id 참조 (N:1)',
+  MODIFY COLUMN ingredient_id INT NOT NULL COMMENT '상품에 포함된 성분 ID. ingredients.ingredient_id 참조 (N:1)';
+
+-- =========================================================
+-- 8. user_profiles 컬럼 설명
+-- =========================================================
+
+ALTER TABLE user_profiles
+  MODIFY COLUMN user_id INT NOT NULL COMMENT '회원 ID. users.user_id 참조 (1:1, 회원 1명당 프로필 1개)',
+  MODIFY COLUMN age_group VARCHAR(20) DEFAULT NULL COMMENT '회원 나이대. KNN 추천 입력값',
+  MODIFY COLUMN gender VARCHAR(20) DEFAULT NULL COMMENT '회원 성별. KNN 추천 입력값',
+  MODIFY COLUMN budget_level VARCHAR(20) DEFAULT NULL COMMENT '예산 수준. 낮음/중간/높음 등 KNN 추천 입력값',
+  MODIFY COLUMN preferred_category VARCHAR(50) DEFAULT NULL COMMENT '선호 카테고리. KNN 추천 입력값',
+  MODIFY COLUMN spicy_preference INT DEFAULT NULL COMMENT '매운맛 선호도. KNN 추천 입력값',
+  MODIFY COLUMN health_preference VARCHAR(100) DEFAULT NULL COMMENT '건강 관련 선호도. 예: 저당, 저칼로리, 고단백',
+  MODIFY COLUMN special_note VARCHAR(255) DEFAULT NULL COMMENT '회원 특이사항 요약 메모';
+
+-- =========================================================
+-- 9. user_conditions 컬럼 설명
+-- =========================================================
+
+ALTER TABLE user_conditions
+  MODIFY COLUMN condition_id INT NOT NULL AUTO_INCREMENT COMMENT '회원 특이사항 기본키(PK)',
+  MODIFY COLUMN user_id INT NOT NULL COMMENT '특이사항을 가진 회원 ID. users.user_id 참조 (N:1, 한 회원이 여러 특이사항을 가질 수 있음)',
+  MODIFY COLUMN condition_type VARCHAR(50) NOT NULL COMMENT '특이사항 유형. 예: allergy, religion, diet, restriction',
+  MODIFY COLUMN ingredient_id INT DEFAULT NULL COMMENT '관련 성분 ID. ingredients.ingredient_id 참조 (N:1, 알레르기/제한 성분이 있을 때만 사용)',
+  MODIFY COLUMN condition_value VARCHAR(100) DEFAULT NULL COMMENT '특이사항 내용. 예: 우유 알레르기, 돼지고기 제한',
+  MODIFY COLUMN severity VARCHAR(20) DEFAULT NULL COMMENT '위험도 또는 중요도. 예: 낮음, 중간, 높음';
+
+-- =========================================================
+-- 10. cart_items 컬럼 설명
+-- =========================================================
+
+ALTER TABLE cart_items
+  MODIFY COLUMN cart_item_id INT NOT NULL AUTO_INCREMENT COMMENT '장바구니 항목 기본키(PK)',
+  MODIFY COLUMN user_id INT NOT NULL COMMENT '장바구니를 사용하는 회원 ID. users.user_id 참조 (N:1)',
+  MODIFY COLUMN product_id INT NOT NULL COMMENT '장바구니에 담긴 상품 ID. products.product_id 참조 (N:1)',
+  MODIFY COLUMN quantity INT NOT NULL DEFAULT 1 COMMENT '장바구니에 담긴 상품 수량',
+  MODIFY COLUMN expected_weight_g FLOAT DEFAULT NULL COMMENT '상품 기준 무게와 수량을 바탕으로 계산한 예상 무게(g)',
+  MODIFY COLUMN measured_weight_g FLOAT DEFAULT NULL COMMENT '로드셀로 측정한 실제 무게(g)',
+  MODIFY COLUMN weight_matched TINYINT(1) DEFAULT NULL COMMENT '로드셀 검증 결과. 1=정상, 0=불일치',
+  MODIFY COLUMN added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '장바구니에 상품이 추가된 시간';
+
+-- =========================================================
+-- 11. purchase_history 컬럼 설명
+-- =========================================================
+
+ALTER TABLE purchase_history
+  MODIFY COLUMN history_id INT NOT NULL AUTO_INCREMENT COMMENT '구매이력 기본키(PK)',
+  MODIFY COLUMN user_id INT NOT NULL COMMENT '구매한 회원 ID. users.user_id 참조 (N:1)',
+  MODIFY COLUMN product_id INT NOT NULL COMMENT '구매한 상품 ID. products.product_id 참조 (N:1)',
+  MODIFY COLUMN quantity INT NOT NULL DEFAULT 1 COMMENT '구매 수량',
+  MODIFY COLUMN purchased_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '구매 일시. KNN 학습용 구매이력 시간';
+
+-- =========================================================
+-- 12. access_points 컬럼 설명
+-- =========================================================
+
+ALTER TABLE access_points
+  MODIFY COLUMN ap_id INT NOT NULL AUTO_INCREMENT COMMENT 'AP 기본키(PK)',
+  MODIFY COLUMN ssid VARCHAR(100) DEFAULT NULL COMMENT 'Wi-Fi 이름. 예: School_WiFi',
+  MODIFY COLUMN bssid VARCHAR(50) NOT NULL COMMENT 'AP 고유 MAC 주소. 같은 SSID를 구분하기 위한 값',
+  MODIFY COLUMN location_hint VARCHAR(100) DEFAULT NULL COMMENT 'AP가 위치한 장소 설명';
+
+-- =========================================================
+-- 13. zone_ap_rssi 컬럼 설명
+-- =========================================================
+
+ALTER TABLE zone_ap_rssi
+  MODIFY COLUMN rssi_id INT NOT NULL AUTO_INCREMENT COMMENT '구역별 AP RSSI 기준값 기본키(PK)',
+  MODIFY COLUMN zone_id INT NOT NULL COMMENT '측정 기준 구역 ID. zones.zone_id 참조 (N:1, 한 구역에 여러 AP 기준값이 존재)',
+  MODIFY COLUMN ap_id INT NOT NULL COMMENT '측정 대상 AP ID. access_points.ap_id 참조 (N:1)',
+  MODIFY COLUMN avg_rssi FLOAT NOT NULL COMMENT '해당 구역에서 측정한 AP 평균 RSSI 값',
+  MODIFY COLUMN sample_count INT DEFAULT 0 COMMENT '평균 RSSI 계산에 사용한 측정 횟수';
+
+-- =========================================================
+-- 14. ap_current_scans 컬럼 설명
+-- =========================================================
+
+ALTER TABLE ap_current_scans
+  MODIFY COLUMN scan_id INT NOT NULL AUTO_INCREMENT COMMENT '실시간 AP 스캔값 기본키(PK)',
+  MODIFY COLUMN scan_group_id INT NOT NULL COMMENT '한 번의 실시간 스캔 묶음 ID. 같은 시간에 잡힌 AP들을 하나의 그룹으로 묶음',
+  MODIFY COLUMN user_id INT DEFAULT NULL COMMENT '현재 카트를 사용하는 회원 ID. users.user_id 참조 (N:1, 테스트 시 NULL 가능)',
+  MODIFY COLUMN ap_id INT NOT NULL COMMENT '실시간으로 감지된 AP ID. access_points.ap_id 참조 (N:1)',
+  MODIFY COLUMN current_rssi FLOAT NOT NULL COMMENT '라즈베리파이가 현재 위치에서 측정한 AP RSSI 값',
+  MODIFY COLUMN scanned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'AP 스캔 시간';
+
+-- =========================================================
+-- 15. knn_training_vectors 컬럼 설명
+-- =========================================================
+
+ALTER TABLE knn_training_vectors
+  MODIFY COLUMN vector_id INT NOT NULL AUTO_INCREMENT COMMENT 'KNN 학습 벡터 기본키(PK)',
+  MODIFY COLUMN user_id INT NOT NULL COMMENT '벡터화된 회원 ID. users.user_id 참조 (N:1)',
+  MODIFY COLUMN age_score FLOAT DEFAULT 0 COMMENT '나이대를 숫자로 변환한 KNN 입력값',
+  MODIFY COLUMN budget_score FLOAT DEFAULT 0 COMMENT '예산 수준을 숫자로 변환한 KNN 입력값',
+  MODIFY COLUMN spicy_score FLOAT DEFAULT 0 COMMENT '매운맛 선호도를 숫자로 변환한 KNN 입력값',
+  MODIFY COLUMN beverage_count FLOAT DEFAULT 0 COMMENT '음료 카테고리 구매 횟수',
+  MODIFY COLUMN snack_count FLOAT DEFAULT 0 COMMENT '과자 카테고리 구매 횟수',
+  MODIFY COLUMN ramen_count FLOAT DEFAULT 0 COMMENT '라면 카테고리 구매 횟수',
+  MODIFY COLUMN living_count FLOAT DEFAULT 0 COMMENT '생활용품 카테고리 구매 횟수',
+  MODIFY COLUMN instant_count FLOAT DEFAULT 0 COMMENT '간편식 카테고리 구매 횟수',
+  MODIFY COLUMN allergy_milk TINYINT(1) DEFAULT 0 COMMENT '우유 알레르기 여부. 1=있음, 0=없음',
+  MODIFY COLUMN allergy_peanut TINYINT(1) DEFAULT 0 COMMENT '땅콩 알레르기 여부. 1=있음, 0=없음',
+  MODIFY COLUMN allergy_wheat TINYINT(1) DEFAULT 0 COMMENT '밀 알레르기 여부. 1=있음, 0=없음',
+  MODIFY COLUMN allergy_shrimp TINYINT(1) DEFAULT 0 COMMENT '새우 알레르기 여부. 1=있음, 0=없음',
+  MODIFY COLUMN total_purchase_count INT DEFAULT 0 COMMENT '전체 구매 횟수',
+  MODIFY COLUMN trained_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Python pandas로 벡터화 또는 학습 데이터를 생성한 시간';
+
+-- =========================================================
+-- 16. recommendations 컬럼 설명
+-- =========================================================
+
+ALTER TABLE recommendations
+  MODIFY COLUMN recommendation_id INT NOT NULL AUTO_INCREMENT COMMENT '추천 결과 기본키(PK)',
+  MODIFY COLUMN user_id INT NOT NULL COMMENT '추천 대상 회원 ID. users.user_id 참조 (N:1)',
+  MODIFY COLUMN zone_id INT DEFAULT NULL COMMENT '추천이 발생한 현재 구역 ID. zones.zone_id 참조 (N:1, 위치 기반 추천에 사용)',
+  MODIFY COLUMN product_id INT NOT NULL COMMENT '추천된 상품 ID. products.product_id 참조 (N:1)',
+  MODIFY COLUMN score FLOAT DEFAULT NULL COMMENT 'KNN 추천 점수 또는 유사도 점수',
+  MODIFY COLUMN reason VARCHAR(255) DEFAULT NULL COMMENT '추천 사유. 예: 현재 구역, 유사 고객 구매이력, 선호 카테고리 기반',
+  MODIFY COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '추천 결과 생성 시간';
+
+
+SHOW DATABASES;
+USE smartcart;
+SHOW TABLES;
+
+USE smartcart;
+SHOW FULL COLUMNS FROM products;
